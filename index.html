@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>Beagle: Food Frenzy</title>
+<title>Nova: Food Frenzy</title>
 <style>
   :root{
     --skyTop:#7ecbff; --skyMid:#a9ddff;
@@ -57,7 +57,7 @@
     </div>
   </header>
 
-  <div id="stage"><canvas id="game" width="1400" height="720" aria-label="Food Frenzy"></canvas></div>
+  <div id="stage"><canvas id="game" width="1400" height="720" aria-label="Nova Food Frenzy"></canvas></div>
 
   <footer>
     <button id="btnJump" class="bigbtn">⬆️ Jump</button>
@@ -69,7 +69,7 @@
 <!-- Start -->
 <div id="startOverlay" class="overlay">
   <div class="panel">
-    <h2>Beagle: Food Frenzy</h2>
+    <h2>Nova: Food Frenzy</h2>
     <p>Tap Start to enable audio on iPhone or iPad.</p>
     <div class="row">
       <button id="startBtn" class="modebtn">▶️ Start with Sound</button>
@@ -128,17 +128,21 @@ fit();
 const MODE={POINTS:'points',ENDLESS:'endless'};
 let mode=MODE.POINTS; modeNameEl.textContent='Points';
 modeBtn.addEventListener('click',()=>modeOverlay.style.display='grid');
-choosePoints.addEventListener('click',()=>{mode=MODE.POINTS;modeNameEl.textContent='Points';reset(true);modeOverlay.style.display='none';});
-chooseEndless.addEventListener('click',()=>{mode=MODE.ENDLESS;modeNameEl.textContent='Endless';reset(true);modeOverlay.style.display='none';});
+['click','touchstart'].forEach(evt=>{
+  choosePoints.addEventListener(evt,()=>{ mode=MODE.POINTS; modeNameEl.textContent='Points'; reset(true); modeOverlay.style.display='none'; },{passive:false});
+  chooseEndless.addEventListener(evt,()=>{ mode=MODE.ENDLESS; modeNameEl.textContent='Endless'; reset(true); modeOverlay.style.display='none'; },{passive:false});
+});
 
-let running=true, t=0, speed=6.2, score=0, shake=0;
-let level=1, target=15, levelClearing=false, pooAnim=0;
+let running=true, t=0, baseSpeed=6.0, score=0, shake=0;
+let level=1, target=16, clearing=false, pooAnim=0;
 const gravity=.62;
 
-/* ===== Beagle (cartoony) ===== */
-const dog={ x:260, y:0, vy:0, w:180, h:110, baseY:0, onGround:true,
-  run:0, tilt:0, squash:0, frame:0, frameTimer:0, state:'run',
-  dash:0, sniff:0
+/* ===== Dog ===== */
+const dog={ x:260, y:0, vy:0, w:176, h:110, baseY:0, onGround:true,
+  frame:0, frameTimer:0, state:'run',
+  dash:0, sniff:0, eatTimer:0,
+  coyote:0,
+  jumpHeld:false, jumpTicks:0
 };
 
 /* ===== Background ===== */
@@ -148,13 +152,13 @@ function makeHills(){ return [{x:0,y:cv.height*.56,c:'#8BC34A',speed:.28,bumps:b
 function bumps(n,w,h){ const a=[]; for(let i=0;i<n;i++) a.push({w,h:h*(.6+Math.random()*.8)}); return a; }
 function makeGrass(){ const a=[]; for(let i=0;i<120;i++) a.push({x:Math.random()*cv.width,s:Math.random()*Math.PI*2}); return a; }
 
-/* ===== Food items ===== */
+/* ===== Food ===== */
 const FOOD_TYPES = [
   {name:'pizza',    w:40, h:36, val:[2,3], draw:(x,y)=>drawPizza(x,y)},
   {name:'sausages', w:44, h:26, val:[3,4], draw:(x,y)=>drawSausages(x,y)},
   {name:'chicken',  w:42, h:34, val:[4,5], draw:(x,y)=>drawChicken(x,y)}
 ];
-let foods=[], spawnTimer=100;
+let foods=[], spawnTimer=80;
 
 /* ===== Audio ===== */
 let ac=null, master=null, sfxOn=false, musicOn=false, musicTimer=null;
@@ -185,23 +189,44 @@ function toggleMusic(){ if(!musicOn){ ensureAudio(); const tempo=110, beat=60/te
   } else { musicOn=false; musicBtn.classList.remove('on'); musicBtn.textContent='🎵 Music'; if(musicTimer) clearTimeout(musicTimer); } }
 soundBtn.addEventListener('click',()=>{ ensureAudio(); if(ac.state==='suspended') ac.resume(); sfxOn=!sfxOn; soundBtn.classList.toggle('on',sfxOn); soundBtn.textContent=sfxOn?'🔊 Sound On':'🔊 Sound'; if(sfxOn) sfx_burp();});
 musicBtn.addEventListener('click',toggleMusic);
-startBtn.addEventListener('click',()=>{ ensureAudio(); ac.resume?.(); sfxOn=true; soundBtn.classList.add('on'); soundBtn.textContent='🔊 Sound On'; sfx_burp(); startOverlay.style.display='none'; modeOverlay.style.display='grid'; });
-startMuted.addEventListener('click',()=>{ startOverlay.style.display='none'; modeOverlay.style.display='grid'; });
+['click','touchstart'].forEach(evt=>{
+  startBtn.addEventListener(evt,()=>{ ensureAudio(); ac.resume?.(); sfxOn=true; soundBtn.classList.add('on'); soundBtn.textContent='🔊 Sound On'; sfx_burp(); startOverlay.style.display='none'; modeOverlay.style.display='grid'; },{passive:false});
+  startMuted.addEventListener(evt,()=>{ startOverlay.style.display='none'; modeOverlay.style.display='grid'; },{passive:false});
+});
 
 /* ===== Controls ===== */
-function pressJump(){ if(dog.onGround) { dog.vy=-23.5; dog.onGround=false; dog.state='jump'; sfx_whoosh(); } }
-function pressDash(){ dog.dash=22; sfx_whoosh(); }
-function pressSniff(){ dog.sniff=36; } // food magnet
+function startJump(){
+  if(dog.onGround || dog.coyote>0){
+    dog.onGround=false;
+    dog.state='jump';
+    dog.vy=-14;                // initial takeoff
+    dog.jumpHeld=true;
+    dog.jumpTicks=0;
+    sfx_whoosh();
+  }
+}
+function endJump(){ dog.jumpHeld=false; }
 
-btnJump.addEventListener('touchstart',e=>{e.preventDefault();pressJump();},{passive:false});
+function pressDash(){ dog.dash=22; sfx_whoosh(); }
+function pressSniff(){ dog.sniff=40; } // pull food nearby
+
+// Touch
+btnJump.addEventListener('touchstart',e=>{e.preventDefault();startJump();},{passive:false});
+btnJump.addEventListener('touchend',e=>{e.preventDefault();endJump();},{passive:false});
 btnDash.addEventListener('touchstart',e=>{e.preventDefault();pressDash();},{passive:false});
 btnSniff.addEventListener('touchstart',e=>{e.preventDefault();pressSniff();},{passive:false});
-
+// Mouse click for desktop
+btnJump.addEventListener('mousedown',e=>{e.preventDefault();startJump();});
+addEventListener('mouseup',e=>endJump());
+// Keyboard
 addEventListener('keydown',e=>{
-  if(['ArrowUp','Space'].includes(e.code)) pressJump();
+  if(['ArrowUp','Space'].includes(e.code)) startJump();
   else if(e.code==='KeyD') pressDash();
   else if(e.code==='KeyS') pressSniff();
   else if(e.code==='KeyP') togglePause();
+});
+addEventListener('keyup',e=>{
+  if(['ArrowUp','Space'].includes(e.code)) endJump();
 });
 
 pauseBtn.addEventListener('click',togglePause);
@@ -210,16 +235,16 @@ function togglePause(){ running=!running; pauseBtn.textContent=running?'⏸️ P
 
 /* ===== Reset and levels ===== */
 function reset(full=false){
-  running=true; levelClearing=false; pooAnim=0; t=0; speed=6.2;
-  if(full){ score=0; updateScore(0,true); level=1; target=randTarget(); }
+  running=true; clearing=false; pooAnim=0; t=0; score=full?0:score;
+  if(full){ level=1; target=randTarget(); }
   shake=0; clouds=makeClouds(); hills=makeHills(); grass=makeGrass();
   foods=[]; spawnTimer=70;
-  Object.assign(dog,{ baseY:cv.height*.72, y:cv.height*.72, vy:0, onGround:true, run:0, tilt:0, squash:0, frame:0, frameTimer:0, state:'run', dash:0, sniff:0 });
+  Object.assign(dog,{ baseY:cv.height*.72, y:cv.height*.72, vy:0, onGround:true, frame:0, frameTimer:0, state:'run', dash:0, sniff:0, eatTimer:0, coyote:10, jumpHeld:false, jumpTicks:0 });
 }
-function randTarget(){ return 12 + Math.floor(Math.random()*12); }
+function randTarget(){ return 12 + Math.floor(Math.random()*14); }
 function levelUp(){
   level++; target = randTarget();
-  speed += 0.22;
+  baseSpeed += 0.22;
   sfx_level();
 }
 
@@ -233,39 +258,41 @@ function drawCloudsSun(){ const r=46; ctx.beginPath(); ctx.arc(cv.width-110,90,r
 function drawCloud(x,y,r){ ctx.fillStyle='rgba(255,255,255,.96)'; ctx.beginPath();
   ctx.arc(x,y,r,0,Math.PI*2); ctx.arc(x+r,y+10,r*.8,0,Math.PI*2); ctx.arc(x-r,y+10,r*.85,0,Math.PI*2); ctx.arc(x,y+18,r*.9,0,Math.PI*2); ctx.fill(); }
 function drawHills(){ const sh=shake?(Math.random()*shake-shake/2):0; ctx.save(); ctx.translate(0,sh);
-  hills.forEach(L=>{ L.x-=L.speed*(speed*.6); if(L.x<-cv.width) L.x+=cv.width; const y=L.y; ctx.fillStyle=L.c;
+  hills.forEach(L=>{ L.x-=L.speed*(speed()*0.6); if(L.x<-cv.width) L.x+=cv.width; const y=L.y; ctx.fillStyle=L.c;
     for(let k=0;k<2;k++){ const xo=L.x+k*cv.width; ctx.beginPath(); ctx.moveTo(xo,cv.height); let x=xo;
       for(const b of L.bumps){ ctx.bezierCurveTo(x+b.w*.3,y-b.h,x+b.w*.7,y+b.h*.2,x+b.w,y); x+=b.w; }
       ctx.lineTo(xo+cv.width,cv.height); ctx.closePath(); ctx.fill(); }});
   ctx.restore(); }
 function drawGround(){ const gy=dog.baseY+26; ctx.fillStyle='#3aa64a'; ctx.fillRect(0,gy,cv.width,cv.height-gy);
   ctx.fillStyle='rgba(255,255,255,.8)'; ctx.fillRect(0,dog.baseY+4,cv.width,3);
-  grass.forEach(g=>{ g.x-=speed*.9; if(g.x<-4) g.x=cv.width+Math.random()*40; const sw=Math.sin(t*.08+g.s)*4;
+  grass.forEach(g=>{ g.x-=speed()*0.9; if(g.x<-4) g.x=cv.width+Math.random()*40; const sw=Math.sin(t*.08+g.s)*4;
     ctx.strokeStyle='#2e7d32'; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(g.x,gy); ctx.quadraticCurveTo(g.x+sw,gy-16,g.x+sw*.4,gy-28); ctx.stroke();}); }
 
 /* ===== Beagle drawing ===== */
 function drawBeagle(){
-  dog.frameTimer++; const fps = dog.state==='run'?14 : 12;
-  if(dog.frameTimer>=Math.max(2,Math.round(60/fps))){ dog.frameTimer=0; const max = dog.state==='run'?8:3; dog.frame=(dog.frame+1)%max; }
+  dog.frameTimer++;
+  const fps = dog.state==='run'?14 : dog.state==='eat'?18 : 12;
+  if(dog.frameTimer>=Math.max(2,Math.round(60/fps))){ dog.frameTimer=0; const max = dog.state==='run'?8:(dog.state==='eat'?2:3); dog.frame=(dog.frame+1)%max; }
 
   const x=dog.x, y=dog.y, W=dog.w, H=dog.h;
-  ctx.save(); ctx.translate(x,y); ctx.rotate(dog.tilt);
+  ctx.save(); ctx.translate(x,y);
+
+  // tilt
+  const tilt = dog.onGround ? Math.sin(t*.06)*.02 : (dog.vy<0 ? -0.07 : 0.06);
+  ctx.rotate(tilt);
 
   // shadow
   ctx.fillStyle='rgba(0,0,0,.22)'; ctx.beginPath(); ctx.ellipse(0,H+16,Math.max(38,W*.64)*(dog.onGround?1:.7),12,0,0,Math.PI*2); ctx.fill();
 
-  // body tri-colour
   const BLACK='#3b2f2f', TAN='#c7a072', WHITE='#fff';
 
   // torso
   ctx.fillStyle=BLACK; rr(-W*.05, H*.48, W*.74, H*.48, 28, true);
-  ctx.beginPath(); ctx.ellipse(W*.18, H*.64, W*.22, H*.20, 0, 0, Math.PI*2); ctx.fill(); // hip
-  ctx.beginPath(); ctx.ellipse(-W*.14, H*.54, W*.20, H*.18, 0, 0, Math.PI*2); ctx.fill(); // shoulder
-
-  // belly white
+  ctx.beginPath(); ctx.ellipse(W*.18, H*.64, W*.22, H*.20, 0, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(-W*.14, H*.54, W*.20, H*.18, 0, 0, Math.PI*2); ctx.fill();
   ctx.fillStyle=WHITE; rr(-W*.12, H*.60, W*.26, H*.32, 22, true);
 
-  // legs simple
+  // legs
   function leg(xo,flip,front){
     const ph=(dog.frame/8)*Math.PI*2;
     const swing=Math.sin(ph+(flip?Math.PI:0))*18*(front?1:.9);
@@ -284,24 +311,26 @@ function drawBeagle(){
   ctx.restore();
 
   // neck and head
-  ctx.fillStyle=TAN; rr(W*.18, H*.38, W*.22, H*.18, 10, true);
   const headW=W*.36, headH=H*.28;
+  ctx.fillStyle=TAN; rr(W*.18, H*.38, W*.22, H*.18, 10, true);
   ctx.save(); ctx.translate(W*.42, H*.30 + Math.sin(t*.20)*1.0);
   ctx.fillStyle=TAN; rr(-headW*.85,-headH*.78, headW*1.8, headH*1.55, headW*.30, true);
-  ctx.fillStyle=WHITE; rr(-3,-headH*.70,7,headH*1.40,3.5,true); // blaze
-  ctx.fillStyle='#111'; ctx.beginPath(); ctx.ellipse(headW*.50, headH*.10, 4,3,0,0,Math.PI*2); ctx.fill(); // nose
-  ctx.fillStyle='#000'; ctx.beginPath(); ctx.ellipse(headW*.06, -headH*.12, 4.2,3.2, 0.25, 0, Math.PI*2); ctx.fill(); // eye
-  ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(headW*.08, -headH*.135, 1.1, 0, Math.PI*2); ctx.fill(); // eye highlight
-  // floppy ears
-  ctx.fillStyle=BLACK;
-  ctx.save(); ctx.translate(-headW*.02,-headH*.30);
-  rr(-headW*.02,-headH*.05, headW*.30, headH*.40, 12, true);
-  ctx.restore();
-  ctx.save(); ctx.translate(headW*.10,-headH*.34); ctx.rotate(0.05);
+  ctx.fillStyle=WHITE; rr(-3,-headH*.70,7,headH*1.40,3.5,true);
+  ctx.fillStyle='#111'; ctx.beginPath(); ctx.ellipse(headW*.50, headH*.10, 4,3,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#000'; ctx.beginPath(); ctx.ellipse(headW*.06, -headH*.12, 4.2,3.2, 0.25, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(headW*.08, -headH*.135, 1.1, 0, Math.PI*2); ctx.fill();
+  // simple ears
+  ctx.fillStyle=BLACK; rr(-headW*.02,-headH*.30, headW*.30, headH*.40, 12, true);
+  ctx.save(); ctx.translate(headW*.14,-headH*.34); ctx.rotate(0.05);
   rr(-headW*.02,-headH*.05, headW*.28, headH*.38, 12, true);
   ctx.restore();
-  ctx.restore(); // head
 
+  // mouth bite while eating
+  if(dog.eatTimer>0){
+    ctx.fillStyle='#111';
+    ctx.beginPath(); ctx.arc(headW*.42, headH*.10, 6, 0, Math.PI*2); ctx.fill();
+  }
+  ctx.restore(); // head group
   ctx.restore();
 }
 
@@ -310,104 +339,117 @@ function drawPizza(x,y){
   ctx.save(); ctx.translate(x,y);
   ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(20,34); ctx.lineTo(-20,34); ctx.closePath();
   ctx.fillStyle='#ffcc80'; ctx.fill();
-  ctx.fillStyle='#d84315'; ctx.fillRect(-16,20,32,6); // sauce hint
-  ctx.fillStyle='#ffeb3b'; ctx.fillRect(-18,16,36,6); // cheese hint
-  ctx.fillStyle='#8d6e63'; for(let i=-10;i<=10;i+=10){ ctx.beginPath(); ctx.arc(i,24,3,0,Math.PI*2); ctx.fill(); } // toppings
+  ctx.fillStyle='#d84315'; ctx.fillRect(-16,20,32,6);
+  ctx.fillStyle='#ffeb3b'; ctx.fillRect(-18,16,36,6);
+  ctx.fillStyle='#8d6e63'; for(let i=-10;i<=10;i+=10){ ctx.beginPath(); ctx.arc(i,24,3,0,Math.PI*2); ctx.fill(); }
   ctx.restore();
 }
 function drawSausages(x,y){
   ctx.save(); ctx.translate(x,y);
   ctx.fillStyle='#d84315';
-  for(let k=-1;k<=1;k++){
-    ctx.beginPath(); ctx.ellipse(k*10,24,13,6,0,0,Math.PI*2); ctx.fill();
-  }
+  for(let k=-1;k<=1;k++){ ctx.beginPath(); ctx.ellipse(k*10,24,13,6,0,0,Math.PI*2); ctx.fill(); }
   ctx.restore();
 }
 function drawChicken(x,y){
   ctx.save(); ctx.translate(x,y);
-  // drumstick
   ctx.fillStyle='#a35d2f'; ctx.beginPath(); ctx.ellipse(0,24,16,12,0,0,Math.PI*2); ctx.fill();
   ctx.beginPath(); ctx.ellipse(14,24,10,8,0,0,Math.PI*2); ctx.fill();
-  ctx.fillStyle='#f5deb3'; ctx.beginPath(); ctx.ellipse(22,24,6,6,0,0,Math.PI*2); ctx.fill(); // bone knob
+  ctx.fillStyle='#f5deb3'; ctx.beginPath(); ctx.ellipse(22,24,6,6,0,0,Math.PI*2); ctx.fill();
   ctx.restore();
 }
 
-/* ===== Poo animation ===== */
+/* ===== Poo drawing ===== */
 function drawPoo(x,y,prog){
-  // prog 0 to 1
   const r=8+prog*2;
   ctx.save(); ctx.translate(x,y);
   ctx.fillStyle='#6d4c41'; ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.fill();
   ctx.beginPath(); ctx.arc(0,-r*.6,r*.7,0,Math.PI*2); ctx.fill();
   ctx.beginPath(); ctx.arc(0,-r*1.2,r*.45,0,Math.PI*2); ctx.fill();
-  // stink lines
   ctx.strokeStyle='rgba(120,90,60,.6)'; ctx.lineWidth=2;
-  for(let i=-1;i<=1;i++){
-    ctx.beginPath(); ctx.moveTo(i*8,-r*1.8); ctx.quadraticCurveTo(i*8-3,-r*2.6,i*8,-r*3.2); ctx.stroke();
-  }
+  for(let i=-1;i<=1;i++){ ctx.beginPath(); ctx.moveTo(i*8,-r*1.8); ctx.quadraticCurveTo(i*8-3,-r*2.6,i*8,-r*3.2); ctx.stroke(); }
   ctx.restore();
 }
 
+/* ===== Spawn food ===== */
+function spawnFood(){
+  const type = FOOD_TYPES[(Math.random()*FOOD_TYPES.length)|0];
+  const x = cv.width + 40;
+  const yBase = dog.baseY - (70 + Math.random()*50);
+  const points = randInt(type.val[0], type.val[1]);
+  foods.push({type:type.name, x, y:yBase, baseY:yBase, w:type.w, h:type.h, draw:type.draw, bob:Math.random()*Math.PI*2, points});
+}
+function randInt(a,b){ return a + Math.floor(Math.random()*(b-a+1)); }
+
 /* ===== Update ===== */
+function speed(){ return baseSpeed + (dog.dash?2.8:0) + level*0.05; }
+
 function update(){
   if(!running) return;
-  t++; speed+=0.0008; if(shake>0) shake--;
-  if(dog.dash>0) dog.dash--; if(dog.sniff>0) dog.sniff--;
+  t++;
 
-  // spawn food
+  // Spawn loop
   spawnTimer--;
-  if(spawnTimer<=0){
+  if(spawnTimer<=0 && !clearing){
     spawnFood();
     const minGap=90, maxGap=160, rnd=Math.floor(minGap+Math.random()*(maxGap-minGap));
-    spawnTimer = rnd + Math.max(0,120-speed*8) | 0;
+    spawnTimer = rnd + Math.max(0,120-speed()*8) | 0;
   }
-  foods.forEach(f=>{ f.x -= speed * (1 + (dog.dash?0.45:0)); f.bob += 0.18; f.y = f.baseY + Math.sin(f.bob)*6; });
+  foods.forEach(f=>{ f.x -= speed(); f.bob += 0.18; f.y = f.baseY + Math.sin(f.bob)*6; });
+  foods = foods.filter(f=>f.x>-80);
 
-  // physics
-  if(!dog.onGround) dog.vy += gravity;
+  // Physics with variable jump
+  if(dog.onGround){ dog.coyote = 10; }
+  else if(dog.coyote>0){ dog.coyote--; }
+
+  // gravity
+  if(!dog.onGround){
+    dog.vy += gravity;
+    // while holding jump, give extra upward accel a few ticks for higher jump
+    if(dog.jumpHeld && dog.jumpTicks<18 && dog.vy<2){
+      dog.vy -= 0.55;
+      dog.jumpTicks++;
+    }
+  }
   dog.y += dog.vy;
+
+  // land
   if(dog.y >= dog.baseY){
-    if(!dog.onGround){ dog.y=dog.baseY; dog.vy=0; dog.onGround=true; dog.state='run'; }
-    dog.y=dog.baseY;
+    dog.y = dog.baseY; dog.vy=0;
+    if(!dog.onGround){ dog.onGround=true; dog.state='run'; }
   } else dog.onGround=false;
 
-  dog.tilt = dog.onGround ? Math.sin(t*.06)*.02 : (dog.vy<0 ? -0.07 : 0.06);
+  // timers
+  if(dog.dash>0) dog.dash--;
+  if(dog.sniff>0) dog.sniff--;
+  if(dog.eatTimer>0) dog.eatTimer--;
 
   // sniff magnet
   if(dog.sniff>0){
     foods.forEach(f=>{
-      const dx = dog.x - f.x, dy = (dog.y - 10) - f.y;
+      const dx = dog.x - f.x, dy = (dog.y - 8) - f.y;
       const d2 = dx*dx + dy*dy;
-      if(d2 < 200*200){ f.x += dx*0.02; f.y += dy*0.02; }
+      if(d2 < 220*220){ f.x += dx*0.03; f.y += dy*0.03; }
     });
   }
 
   // eat
-  const hb = { x:dog.x - dog.w*0.30, y:dog.y - dog.h*0.34, w:dog.w*0.60, h:dog.h*0.50 };
-  for(let i=foods.length-1;i>=0;i--){
-    const f=foods[i];
-    const fb={x:f.x-f.w*0.5,y:f.y-f.h*0.5,w:f.w,h:f.h};
-    if(rects(hb,fb)){
-      const val = f.points;
-      foods.splice(i,1);
-      sfx_munch();
-      addScore(val);
-      if(mode===MODE.POINTS && score >= target && !levelClearing){
-        levelClearing=true;
-        pooAnim=1; // start
-        sfx_plop();
-        setTimeout(()=>{ // short celebration then next level
-          levelClearing=false;
-          levelUp();
-        }, 1100);
+  if(!clearing){
+    const hb = { x:dog.x - dog.w*0.30, y:dog.y - dog.h*0.34, w:dog.w*0.60, h:dog.h*0.50 };
+    for(let i=foods.length-1;i>=0;i--){
+      const f=foods[i];
+      const fb={x:f.x-f.w*0.5,y:f.y-f.h*0.5,w:f.w,h:f.h};
+      if(rects(hb,fb)){
+        foods.splice(i,1);
+        dog.state='eat'; dog.eatTimer=14;
+        sfx_munch();
+        addScore(f.points);
+        if(mode===MODE.POINTS && score >= target){
+          clearing=true; pooAnim=0.05; sfx_plop();
+          setTimeout(()=>{ clearing=false; levelUp(); }, 1100);
+        }
       }
     }
   }
-
-  // clean off-screen
-  foods = foods.filter(f=>f.x > -60);
-
-  // gentle speed increase
 }
 
 /* ===== Draw ===== */
@@ -415,16 +457,13 @@ function draw(){
   ctx.clearRect(0,0,cv.width,cv.height);
   drawCloudsSun(); drawHills(); drawGround();
 
-  // foods
   foods.forEach(f=>{
-    // shadow
     ctx.fillStyle='rgba(0,0,0,.18)';
     ctx.beginPath(); ctx.ellipse(f.x, dog.baseY+20, Math.max(18,f.w*.6), 8, 0, 0, Math.PI*2); ctx.fill();
     f.draw(f.x, f.y);
   });
 
-  // poo at level end
-  if(levelClearing && pooAnim>0){
+  if(clearing){
     pooAnim = Math.min(1, pooAnim + 0.06);
     drawPoo(dog.x+40, dog.baseY+6, pooAnim);
   }
@@ -440,17 +479,7 @@ function draw(){
   }
 }
 
-/* ===== Food helpers ===== */
-function spawnFood(){
-  const type = FOOD_TYPES[(Math.random()*FOOD_TYPES.length)|0];
-  const x = cv.width + 40;
-  const yBase = dog.baseY - (70 + Math.random()*50);
-  const points = randInt(type.val[0], type.val[1]);
-  foods.push({type:type.name, x, y:yBase, baseY:yBase, w:type.w, h:type.h, draw:type.draw, bob:Math.random()*Math.PI*2, points});
-}
-function randInt(a,b){ return a + Math.floor(Math.random()*(b-a+1)); }
-
-/* ===== Runtime helpers ===== */
+/* ===== Loop and scoring ===== */
 function loop(){ if(running){ update(); } draw(); requestAnimationFrame(loop); }
 function addScore(delta){
   score+=delta; scoreEl.textContent=String(score);
@@ -461,6 +490,10 @@ function addScore(delta){
 /* ===== Start ===== */
 function togglePause(){ running=!running; pauseBtn.textContent=running?'⏸️ Pause':'▶️ Resume'; }
 reset(true); loop();
+
+/* Utility draw for clouds used above */
+function drawCloud(x,y,r){ ctx.fillStyle='rgba(255,255,255,.96)'; ctx.beginPath();
+  ctx.arc(x,y,r,0,Math.PI*2); ctx.arc(x+r,y+10,r*.8,0,Math.PI*2); ctx.arc(x-r,y+10,r*.85,0,Math.PI*2); ctx.arc(x,y+18,r*.9,0,Math.PI*2); ctx.fill(); }
 
 })();
 </script>
